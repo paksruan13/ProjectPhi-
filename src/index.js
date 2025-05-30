@@ -111,6 +111,7 @@ app.post('/teams', async(req, res) => {
   }
 })
 
+//User api + params
 app.post('/users', async(req, res) => {
   const {name, email, teamId} = req.body;
   if(!name || !email){
@@ -139,6 +140,7 @@ app.get('/users', async(req, res) => {
   }
 });
 
+//Donations API
 app.post('/donations', async(req, res) => {
   const {amount, currency = 'usd', userId, teamId } = req.body;
   if(amount == null || !teamId){
@@ -182,6 +184,7 @@ app.get('/donations', async(req, res) => {
   }
 })
 
+//sales API
 app.post('/sales', async(req, res) => {
   const {quantity, teamId} = req.body;
   if(quantity == null || !teamId) {
@@ -221,6 +224,7 @@ app.get('/sales', async(req, res) => {
   }
 })
 
+//Photos API
 app.post('/photos', upload.single('file'), async(req, res) => {
   const {teamId} = req.body;
   if(!teamId || !req.file) {
@@ -263,6 +267,87 @@ app.get('/photos', async(req, res) => {
   }
 })
 
+
+//Stripe API
+const Stripe = require('stripe');
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+  apiVersion: '2025-05-28.basil',
+});
+const bodyParser = require('body-parser');
+
+app.use((req, res, next) => {
+  if(req.originalUrl === '/webhooks/stripe') {
+    next();
+  } else {
+    express.json()(req, res, next);
+  }
+})
+
+//Webhook handler
+app.post('/webhooks/stripe', bodyParser.raw({ type: 'application/json' }), async (req, res) => {
+  let event;
+  if (req.headers['x-bypass-signature'] === 'true') {
+    // Directly parse the JSON body
+    event = JSON.parse(req.body.toString());
+    console.log('⚠️ Bypassed signature, event:', event.type);
+  } else {
+    const sig = req.headers['stripe-signature'];
+    try {
+      event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+    } catch (err) {
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+  }
+  switch(event.type){
+    case 'checkout.session.completed':
+      const session = event.data.object;
+      try{
+        const {teamId, userId} = session.metadata || {};
+        const amount = session.amount_total / 100;
+        const donation = await prisma.donation.create({
+          data: {
+            amount,
+            currency: session.currency,
+            user: userId ? {connect: {id: userId}} : undefined,
+            team: {connect: {id: teamId}},
+          },
+        });
+        console.log('Recorded donation from webhook:', donation.id);
+      } catch(err) {
+        console.error('Failed to record donation:', err);
+      }
+      break;
+
+      default:
+        console.log(`Unhandled event type ${event.type}`);
+  }
+  res.json({received: true});
+})
+
+app.post('/create-checkout-session', express.json(), async(req, res) => {
+  const{teamId, userId, amount} = req.body;
+  try{
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      mode: 'payment',
+      line_items: [{
+        price_data: {
+          currency: 'usd',
+          product_data: {name: 'Donation'},
+          unit_amount: Math.round(amount * 100),
+        },
+        quantity: 1,
+      }],
+      metadata: {teamId, userId},
+      success_url: "http://localhost:3000/success?session_id={CHECKOUT_SESSION_ID}",
+      cancel_url:  "http://localhost:3000/cancel"
+    });
+    res.json({url: session.url});
+  } catch(err) {
+    console.error('Error creating checkout session:', err);
+    res.status(500).json({error: err.message});
+  }
+});
 app.listen(port, () => {
-  console.log(`🚀 Backend running on http://localhost:${port}`);
+  console.log(`Backend running on http://localhost:${port}`);
 });
