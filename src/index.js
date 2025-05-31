@@ -10,6 +10,59 @@ const prisma = new PrismaClient();
 const multer = require('multer');
 const upload = multer();
 const {v4: uuid} = require('uuid');
+const Stripe = require('stripe');
+const bodyParser = require('body-parser');
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+  apiVersion: '2025-05-28.basil',
+});
+
+//Webhook handler
+app.post(
+  '/webhooks/stripe',
+  bodyParser.raw({ type: 'application/json' }),
+  async (req, res) => {
+    
+    let event;
+    const sig = req.headers['stripe-signature'];
+    try{
+      event = stripe.webhooks.constructEvent(
+        req.body,
+        sig,
+        process.env.STRIPE_WEBHOOK_SECRET
+      );
+      console.log('Signature verified-Event type:', event.type);
+    } catch(err) {
+      console.error('signature verfication failed:', err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    if(event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      console.log('Session Payload:', session);
+      const {teamId, userId} = session.metadata || {};
+      const amount = session.amount_total / 100
+      console.log(`Creating donation: teamId=${teamId}, userId=${userId}, amount=${amount}`);
+      try{
+        const donation = await prisma.donation.create({
+          data:{
+            amount,
+            currency: session.currency,
+            user:userId ? {connect: {id: userId}} : undefined,
+            team: {connect: {id: teamId}},
+          }
+        });
+        console.log('Recorded donation from webhook:', donation.id);
+      } catch(err) {
+        console.error('Prisma error recording donation:', err);
+      } 
+    } else {
+        console.log(`Unhandled event type: ${event.type}`);
+      }
+      return res.json({received: true});
+  }
+);
+
 app.use(express.json());
 
 // 3. Postgres
@@ -269,60 +322,6 @@ app.get('/photos', async(req, res) => {
 
 
 //Stripe API
-const Stripe = require('stripe');
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-  apiVersion: '2025-05-28.basil',
-});
-const bodyParser = require('body-parser');
-
-app.use((req, res, next) => {
-  if(req.originalUrl === '/webhooks/stripe') {
-    next();
-  } else {
-    express.json()(req, res, next);
-  }
-})
-
-//Webhook handler
-app.post('/webhooks/stripe', bodyParser.raw({ type: 'application/json' }), async (req, res) => {
-  let event;
-  if (req.headers['x-bypass-signature'] === 'true') {
-    // Directly parse the JSON body
-    event = JSON.parse(req.body.toString());
-    console.log('⚠️ Bypassed signature, event:', event.type);
-  } else {
-    const sig = req.headers['stripe-signature'];
-    try {
-      event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-    } catch (err) {
-      return res.status(400).send(`Webhook Error: ${err.message}`);
-    }
-  }
-  switch(event.type){
-    case 'checkout.session.completed':
-      const session = event.data.object;
-      try{
-        const {teamId, userId} = session.metadata || {};
-        const amount = session.amount_total / 100;
-        const donation = await prisma.donation.create({
-          data: {
-            amount,
-            currency: session.currency,
-            user: userId ? {connect: {id: userId}} : undefined,
-            team: {connect: {id: teamId}},
-          },
-        });
-        console.log('Recorded donation from webhook:', donation.id);
-      } catch(err) {
-        console.error('Failed to record donation:', err);
-      }
-      break;
-
-      default:
-        console.log(`Unhandled event type ${event.type}`);
-  }
-  res.json({received: true});
-})
 
 app.post('/create-checkout-session', express.json(), async(req, res) => {
   const{teamId, userId, amount} = req.body;
