@@ -12,56 +12,78 @@ const upload = multer();
 const {v4: uuid} = require('uuid');
 const Stripe = require('stripe');
 const bodyParser = require('body-parser');
-
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-  apiVersion: '2025-05-28.basil',
+const stripeClient = Stripe(process.env.STRIPE_SECRET_KEY, {
+  apiVersion: '2024-06-20',
 });
 
-//Webhook handler
-app.post(
-  '/webhooks/stripe',
-  bodyParser.raw({ type: 'application/json' }),
-  async (req, res) => {
+// Stripe Webhook
+app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
+  console.log('Webhook handler executing...');
+  
+  const sig = req.headers['stripe-signature'];
+  
+  if (!sig) {
+    console.log('No signature header');
+    return res.status(400).send('No signature');
+  }
+
+  let event;
+
+  try {
+    console.log('Verifying signature...');  
+    event = stripeClient.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+    console.log('Signature verified, Event type:', event.type);
+  } catch (err) {
+    console.log('Signature verification failed:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    console.log('Processing payment:', session.id);
+    console.log('Amount:', session.amount_total / 100);
+    console.log('Metadata:', session.metadata);
     
-    let event;
-    const sig = req.headers['stripe-signature'];
-    try{
-      event = stripe.webhooks.constructEvent(
-        req.body,
-        sig,
-        process.env.STRIPE_WEBHOOK_SECRET
-      );
-      console.log('Signature verified-Event type:', event.type);
-    } catch(err) {
-      console.error('signature verfication failed:', err.message);
-      return res.status(400).send(`Webhook Error: ${err.message}`);
+    await handleCompletedPayment(session);
+  }
+
+  res.json({received: true});
+});
+
+// Webhook handler function
+async function handleCompletedPayment(session) {
+  try {
+    const { teamId, userId } = session.metadata || {};
+    const amount = session.amount_total / 100; // Convert from cents
+    
+    if (!teamId) {
+      console.error('No teamId in session metadata');
+      return;
     }
 
-    if(event.type === 'checkout.session.completed') {
-      const session = event.data.object;
-      console.log('Session Payload:', session);
-      const {teamId, userId} = session.metadata || {};
-      const amount = session.amount_total / 100
-      console.log(`Creating donation: teamId=${teamId}, userId=${userId}, amount=${amount}`);
-      try{
-        const donation = await prisma.donation.create({
-          data:{
-            amount,
-            currency: session.currency,
-            user:userId ? {connect: {id: userId}} : undefined,
-            team: {connect: {id: teamId}},
-          }
-        });
-        console.log('Recorded donation from webhook:', donation.id);
-      } catch(err) {
-        console.error('Prisma error recording donation:', err);
-      } 
-    } else {
-        console.log(`Unhandled event type: ${event.type}`);
-      }
-      return res.json({received: true});
+    const donation = await prisma.donation.create({
+      data: {
+        amount,
+        currency: session.currency,
+        stripeSessionId: session.id,
+        user: userId ? { connect: { id: userId } } : undefined,
+        team: { connect: { id: teamId } },
+      },
+    });
+    
+    console.log('Donation saved:', donation.id);
+    
+    // TODO: Publish to Redis for real-time updates
+    await redis.publish('donation:created', JSON.stringify({
+      teamId,
+      amount,
+      donationId: donation.id
+    }));
+    
+  } catch (error) {
+    console.error('Error handling completed payment:', error);
   }
-);
+}
 
 app.use(express.json());
 
@@ -320,13 +342,12 @@ app.get('/photos', async(req, res) => {
   }
 })
 
-
 //Stripe API
 
 app.post('/create-checkout-session', express.json(), async(req, res) => {
   const{teamId, userId, amount} = req.body;
   try{
-    const session = await stripe.checkout.sessions.create({
+    const session = await stripeClient.checkout.sessions.create({
       payment_method_types: ['card'],
       mode: 'payment',
       line_items: [{
@@ -339,7 +360,7 @@ app.post('/create-checkout-session', express.json(), async(req, res) => {
       }],
       metadata: {teamId, userId},
       success_url: "http://localhost:3000/success?session_id={CHECKOUT_SESSION_ID}",
-      cancel_url:  "http://localhost:3000/cancel"
+      cancel_url: "http://localhost:3000/cancel"
     });
     res.json({url: session.url});
   } catch(err) {
@@ -347,6 +368,7 @@ app.post('/create-checkout-session', express.json(), async(req, res) => {
     res.status(500).json({error: err.message});
   }
 });
-app.listen(port, () => {
-  console.log(`Backend running on http://localhost:${port}`);
+
+app.listen(4242, '0.0.0.0', () => {
+  console.log('Express listening at http://0.0.0.0:4242');
 });
