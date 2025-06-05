@@ -12,13 +12,26 @@ const upload = multer();
 const {v4: uuid} = require('uuid');
 const Stripe = require('stripe');
 const bodyParser = require('body-parser');
+const { Server, Socket } = require('socket.io');
+const http = require('http');
+const { timeStamp } = require('console');
+
+
 const stripeClient = Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: '2024-06-20',
 });
 
-// Stripe Webhook
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "*", // Adjust to frontend URL
+    methods: ["GET", "POST"],
+  },
+});
+
+// Stripe webhook handler
 app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
-  console.log('Webhook handler executing...');
+  console.log('Executing webhook handler...');
   
   const sig = req.headers['stripe-signature'];
   
@@ -30,9 +43,9 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
   let event;
 
   try {
-    console.log('Verifying signature...');  
+    console.log('🔍Attempting signature verification...');  
     event = stripeClient.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-    console.log('Signature verified, Event type:', event.type);
+    console.log('Signature verified! Event type:', event.type);
   } catch (err) {
     console.log('Signature verification failed:', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
@@ -40,7 +53,7 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
-    console.log('Processing payment:', session.id);
+    console.log('💰 Processing payment:', session.id);
     console.log('Amount:', session.amount_total / 100);
     console.log('Metadata:', session.metadata);
     
@@ -50,42 +63,20 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
   res.json({received: true});
 });
 
-// Webhook handler function
-async function handleCompletedPayment(session) {
-  try {
-    const { teamId, userId } = session.metadata || {};
-    const amount = session.amount_total / 100; // Convert from cents
-    
-    if (!teamId) {
-      console.error('No teamId in session metadata');
-      return;
-    }
-
-    const donation = await prisma.donation.create({
-      data: {
-        amount,
-        currency: session.currency,
-        stripeSessionId: session.id,
-        user: userId ? { connect: { id: userId } } : undefined,
-        team: { connect: { id: teamId } },
-      },
-    });
-    
-    console.log('Donation saved:', donation.id);
-    
-    // TODO: Publish to Redis for real-time updates
-    await redis.publish('donation:created', JSON.stringify({
-      teamId,
-      amount,
-      donationId: donation.id
-    }));
-    
-  } catch (error) {
-    console.error('Error handling completed payment:', error);
-  }
-}
-
 app.use(express.json());
+
+//test socket
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(200);
+  } else {
+    next();
+  }
+});
 
 // 3. Postgres
 const db = new Pool({
@@ -369,6 +360,233 @@ app.post('/create-checkout-session', express.json(), async(req, res) => {
   }
 });
 
-app.listen(4242, '0.0.0.0', () => {
-  console.log('Express listening at http://0.0.0.0:4242');
+app.get('/leaderboard', async (req, res) => {
+  try{
+    const teams = await prisma.team.findMany({
+      include:{
+        donations:{
+          select: {amount: true},
+        },
+        shirtSales:{
+          select: {quantity: true},
+        },
+        photos:{
+          select: {approved: true},
+        },
+        _count: {
+          select:{
+            donations: true,
+            shirtSales: true,
+            photos: true
+          }
+        }
+      }
+    });
+    const leaderboard = teams.map(team => {
+      const totalDonations = team.donations.reduce((sum, donation) => sum + donation.amount, 0);
+      const totalShirtPoints = team.shirtSales.reduce((sum, sale) => sum + (sale.quantity * 10), 0); //sale quantity * 10 to make each shirt worth 10 points
+      const approvedPhotos = team.photos.filter(photo => photo.approved);
+      const totalPhotoPoints = approvedPhotos.length * 50; // Assuming each approved photo is worth 50 points
+      const totalScore = totalDonations + totalShirtPoints + totalPhotoPoints;
+      return {
+        id: team.id,
+        name: team.name,
+        totalScore : totalScore,
+        totalDonations: totalDonations,
+        totalShirtPoints: totalShirtPoints,
+        donationCount: team._count.donations,
+        shirtSaleCount: team._count.shirtSales,
+        photoCount: team._count.photos,
+        createdAt: team.createdAt
+      };
+    });
+    leaderboard.sort((a, b) => b.totalScore - a.totalScore);
+    
+    const rankedLeaderboard = leaderboard.map((team, index) => ({
+      ...team,
+      rank: index + 1,
+    }));
+    res.json(rankedLeaderboard);
+  } catch (err) {
+    console.error('Error fetching leaderboard:', err);
+    res.status(500).json({error: err.message});
+  }
+});
+
+io.on('connection', (socket) => { //Socker connection handling
+  console.log('Client Connected: ', socket.id);
+  socket.join('leaderboard'); //real-time leaderboard update
+  socket.on('disconnect', () => {
+    console.log('Client Disconnected', socket.id);
+  });
+});
+
+async function emitLeaderboardUpdate() { //live leaderboard update
+  try{
+    const teams = await prisma.team.findMany({
+      include:{
+        donations: {select: {amount: true}},
+        shirtSales: {select: {quantity: true}},
+        photos: {select: {approved: true}},
+        _count: {
+          select: {
+            donations: true,
+            shirtSales: true,
+            photos: true
+          }
+        }
+      }
+    });
+    const leaderboard = teams.map(team => {
+      const totalDonations = team.donations.reduce((sum, donation) => sum + donation.amount, 0);
+      const totalShirtPoints = team.shirtSales.reduce((sum, sale) => sum + (sale.quantity * 10), 0);
+      const approvedPhotos = team.photos.filter(photo => photo.approved);
+      const totalPhotoPoints = approvedPhotos.length * 50; // Assuming each approved photo is  5 points
+      const totalScore = totalDonations + totalShirtPoints + totalPhotoPoints;
+      return {
+        id: team.id,
+        name: team.name,
+        totalScore: totalScore,
+        totalDonations: totalDonations,
+        totalShirtPoints: totalShirtPoints,
+        donationCount: team._count.donations,
+        shirtSaleCount: team._count.shirtSales,
+        totalPhotoPoints: totalPhotoPoints,
+        approvedPhotosCount: approvedPhotos.length,
+        photoCount: team._count.photos,
+        createdAt: team.createdAt
+      };
+    });
+
+    leaderboard.sort((a, b) => b.totalScore - a.totalScore);
+    const rankedLeaderboard = leaderboard.map((team, index) => ({
+      ...team,
+      rank: index + 1,
+    }));
+    io.to('leaderboard').emit('leaderboard-update', rankedLeaderboard);
+    console.log('Leaderboard update emitted to clients');
+  } catch(err){
+    console.error('Error emitting leaderboard update:', err);
+  }
+}
+
+//webhook with
+async function handleCompletedPayment(session){
+  try{
+    const {teamId, userId} = session.metadata || {};
+    const amount = session.amount_total / 100;
+    if(!teamId){
+      console.error('No teamId in session metadata');
+      return;
+    }
+    const donation = await prisma.donation.create({
+      data: {
+        amount,
+        currency: session.currency,
+        stripeSessionId: session.id,
+        user: userId ? { connect: { id: userId } } : undefined,
+        team: { connect: { id: teamId } },
+      },
+    });
+    console.log('Donation saved:', donation.id);
+
+    await emitLeaderboardUpdate();
+    io.to('leaderboard').emit('new-donation', {
+      teamId,
+      amount,
+      donationId: donation.id,
+      timeStamp: new Date()
+    });
+  } catch(err) {
+    console.error('Error handling completed payment:', err);
+  }
+}
+
+//Delete when FrontEnd is ready
+app.post('/test-socket', async (req, res) =>{
+  await emitLeaderboardUpdate();
+  io.to('leaderboard').emit('test-event', {
+    message: 'Test event received',
+    timeStamp: new Date()
+  });
+  res.json({message: 'Socket test sent!'});
+})
+
+app.get('/photos/pending', async (req, res) => {
+  try {
+    const pendingPhotos = await prisma.photo.findMany({
+      where: {approved: false},
+      orderBy: {uploadedAt: 'desc'},
+      include: {team: {select: {id: true, name: true}}},
+    });
+    return res.json(pendingPhotos);
+  } catch (err) {
+    console.error('Error fetching pending photos:', err);
+    return res.status(500).json({error: err.message});
+  }
+})
+
+app.put('/photos/:id/approve', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const photo = await prisma.photo.update({
+      where: { id },
+      data: { approved: true },
+      include: { team: { select: { id: true, name: true } } },
+    });
+
+    console.log('Photo Approved!', photo.id, 'for team:', photo.team.name);
+    await emitLeaderboardUpdate();
+    io.to('leaderboard').emit('photo-approved', {
+      photoId: photo.id,
+      teamId: photo.team.id,
+      teamName: photo.team.name,
+      timeStamp: new Date(),
+  });
+  return res.json(photo);
+  } catch (err) {
+    console.error('Error approving photo:', err);
+    return res.status(500).json({error: err.message});
+  }
+});
+
+app.put('/photos/:id/reject', async(req, res) => {
+  const {id} = req.params;
+  const {reason} = req.body;
+
+  try{
+    const photo = await prisma.photo.delete({
+      where: {id}
+    });
+    console.log('Photo Rejected!', photo.id);
+
+    io.to('leaderboard').emit('photo-rejected', {
+      photoId: photo.id,
+      reason,
+      timeStamp: new Date(),
+    });
+
+    return res.json({message: 'Photo Rejected and Removed'});
+  } catch (err) {
+    console.error('Error rejecting photo:', err);
+    return res.status(500).json({error: err.message});
+  }
+})
+
+app.get('/photos/approved', async (req, res) => {
+  try{
+    const approvedPhotos = await prisma.photo.findMany({
+      where: {approved: true},
+      orderBy: {uploadedAt: 'desc'},
+      include: {team: {select: {id: true, name: true}}},
+    });
+    return res.json(approvedPhotos);
+  } catch (err) { 
+    console.error('Error fetching approved photos:', err);
+    return res.status(500).json({error: err.message});
+  }
+})
+
+server.listen(4243, '0.0.0.0', () => {
+  console.log('Express & SockerIO at http://0.0.0.0:4243');
 });
