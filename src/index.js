@@ -91,7 +91,7 @@ const db = new Pool({
 const redis = new Redis(process.env.REDIS_URL);
 redis.on('error', err => console.error('Redis error:', err.message));
 
-// 5. S3 (MinIO) – now that env is loaded
+// 5. S3
 const minioEndpoint = `http://${process.env.MINIO_ENDPOINT}`;
 const s3 = new S3Client({
   endpoint:      minioEndpoint,     // e.g. "http://localhost:9000"
