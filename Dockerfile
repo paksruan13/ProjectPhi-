@@ -1,25 +1,23 @@
-# Dockerfile
-FROM node:18-alpine
+FROM node:18
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y curl wget && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # Copy package files
 COPY package*.json ./
-
-# Install all dependencies (including devDependencies for Prisma)
-RUN npm ci
-
-# Copy prisma schema
 COPY prisma ./prisma/
 
-# Generate Prisma client
+# Install dependencies
+RUN npm install
+
+# Generate Prisma client during build
 RUN npx prisma generate
 
-# Copy application files
+# Copy source code
 COPY . .
 
-# Expose port
-EXPOSE 4242
+EXPOSE 4243
 
-# Start the application
 CMD ["node", "src/index.js"]

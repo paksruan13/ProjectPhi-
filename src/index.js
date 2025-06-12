@@ -4,7 +4,7 @@ const { Pool } = require('pg');
 const Redis = require('ioredis');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const app = express();
-const port = process.env.PORT || 4000;
+const port = process.env.PORT || 4243;
 const{ PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const multer = require('multer');
@@ -14,7 +14,9 @@ const Stripe = require('stripe');
 const bodyParser = require('body-parser');
 const { Server, Socket } = require('socket.io');
 const http = require('http');
-const { timeStamp } = require('console');
+const { timeStamp, time } = require('console');
+const { emit } = require('process');
+const cors = require('cors');
 
 
 const stripeClient = Stripe(process.env.STRIPE_SECRET_KEY, {
@@ -24,10 +26,19 @@ const stripeClient = Stripe(process.env.STRIPE_SECRET_KEY, {
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "*", // Adjust to frontend URL
-    methods: ["GET", "POST"],
+    origin: "http://localhost:5173", // Adjust to frontend URL
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", 'stripe-signature'],
   },
 });
+
+app.use(cors({
+  origin: ["http://localhost:5173"], // Adjust to your frontend URL
+  credentials: true, // Allow cookies to be sent
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", 'stripe-signature'],
+}))
 
 // Stripe webhook handler
 app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
@@ -43,7 +54,7 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
   let event;
 
   try {
-    console.log('🔍Attempting signature verification...');  
+    console.log('Attempting signature verification...');  
     event = stripeClient.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
     console.log('Signature verified! Event type:', event.type);
   } catch (err) {
@@ -53,7 +64,7 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
-    console.log('💰 Processing payment:', session.id);
+    console.log('Processing payment:', session.id);
     console.log('Amount:', session.amount_total / 100);
     console.log('Metadata:', session.metadata);
     
@@ -64,19 +75,6 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
 });
 
 app.use(express.json());
-
-//test socket
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-  
-  if (req.method === 'OPTIONS') {
-    res.sendStatus(200);
-  } else {
-    next();
-  }
-});
 
 // 3. Postgres
 const db = new Pool({
@@ -94,7 +92,7 @@ redis.on('error', err => console.error('Redis error:', err.message));
 // 5. S3
 const minioEndpoint = `http://${process.env.MINIO_ENDPOINT}`;
 const s3 = new S3Client({
-  endpoint:      minioEndpoint,     // e.g. "http://localhost:9000"
+  endpoint:      minioEndpoint,     
   region:        'us-east-1',
   credentials: {
     accessKeyId:     process.env.MINIO_ACCESS_KEY,
@@ -105,30 +103,17 @@ const s3 = new S3Client({
 
 // 6. health‐check
 app.get('/health', async (req, res) => {
-  try {
-    await db.query('SELECT 1');
-    await redis.ping();
-    res.json({ status: 'ok' });
-  } catch (err) {
-    res.status(500).json({ status: 'error', message: err.message });
-  }
+  res.status(200).json({
+    status: 'Healthy',
+    timestamp: new Date().toISOString(),
+    services: {
+      database: 'Connected',
+      redis: 'Connected',
+      s3: 'Connected',
+    }
+  })
 });
 
-// 7. test upload route
-app.post('/test-upload', express.text(), async (req, res) => {
-  try {
-    console.log('Uploading to MinIO at:', minioEndpoint);
-    await s3.send(new PutObjectCommand({
-      Bucket: 'test-bucket',
-      Key:    'hello.txt',
-      Body:   'Hello, MinIO!',
-    }));
-    return res.json({ success: true });
-  } catch (err) {
-    console.error('MinIO upload error:', err);
-    return res.status(500).json({ success: false, error: err.message });
-  }
-});
 
 //List all teams
 app.get('/teams', async(req, res) => {
@@ -170,6 +155,7 @@ app.post('/teams', async(req, res) => {
     const team = await prisma.team.create({
       data: { name },
     });
+    await emitLeaderboardUpdate(); // Emit update so socket receives
     return res.status(201).json(team);
   } catch(err) {
     console.error('Error creating team:', err);
@@ -187,6 +173,9 @@ app.post('/users', async(req, res) => {
     const user = await prisma.user.create({
       data: {name, email, team: teamId ? { connect: {id: teamId } } : undefined},
     });
+    if(teamId) {
+      await emitLeaderboardUpdate();
+    }
     return res.status(201).json(user);
   } catch (err) {
     console.error('Error creating user:', err);
@@ -377,17 +366,21 @@ app.get('/leaderboard', async (req, res) => {
           select:{
             donations: true,
             shirtSales: true,
-            photos: true
+            photos: true,
           }
         }
       }
     });
-    const leaderboard = teams.map(team => {
+
+    const leaderboard = await Promise.all(teams.map(async team => {
       const totalDonations = team.donations.reduce((sum, donation) => sum + donation.amount, 0);
       const totalShirtPoints = team.shirtSales.reduce((sum, sale) => sum + (sale.quantity * 10), 0); //sale quantity * 10 to make each shirt worth 10 points
       const approvedPhotos = team.photos.filter(photo => photo.approved);
       const totalPhotoPoints = approvedPhotos.length * 50; // Assuming each approved photo is worth 50 points
       const totalScore = totalDonations + totalShirtPoints + totalPhotoPoints;
+      const memberCount = await prisma.user.count({
+        where: {teamId: team.id},
+      });
       return {
         id: team.id,
         name: team.name,
@@ -396,30 +389,39 @@ app.get('/leaderboard', async (req, res) => {
         totalShirtPoints: totalShirtPoints,
         donationCount: team._count.donations,
         shirtSaleCount: team._count.shirtSales,
+        totalPhotoPoints: totalPhotoPoints,
+        approvedPhotosCount: approvedPhotos.length,
         photoCount: team._count.photos,
+        memberCount: memberCount,
         createdAt: team.createdAt
       };
-    });
-    leaderboard.sort((a, b) => b.totalScore - a.totalScore);
-    
+    }));
+    leaderboard.sort((a, b) => b.totalScore - a.totalScore); // Sort by total score
+    // Add rank to each team
     const rankedLeaderboard = leaderboard.map((team, index) => ({
       ...team,
       rank: index + 1,
-    }));
-    res.json(rankedLeaderboard);
+    })); 
+    res.json(rankedLeaderboard); 
   } catch (err) {
     console.error('Error fetching leaderboard:', err);
     res.status(500).json({error: err.message});
   }
 });
 
-io.on('connection', (socket) => { //Socker connection handling
-  console.log('Client Connected: ', socket.id);
-  socket.join('leaderboard'); //real-time leaderboard update
-  socket.on('disconnect', () => {
-    console.log('Client Disconnected', socket.id);
+io.on('connection', (socket) => {
+  console.log(socket.id, 'connected');
+
+  socket.join('leaderboard'); // Join room
+  socket.on('join-leaderboard', () => {
+    socket.join('leaderboard');
   });
-});
+
+  socket.on('disconnect', () => {
+    console.log(socket.id, 'disconnected');
+  });
+
+})
 
 async function emitLeaderboardUpdate() { //live leaderboard update
   try{
@@ -432,17 +434,20 @@ async function emitLeaderboardUpdate() { //live leaderboard update
           select: {
             donations: true,
             shirtSales: true,
-            photos: true
+            photos: true,
           }
         }
       }
     });
-    const leaderboard = teams.map(team => {
+    const leaderboard = await Promise.all(teams.map(async team => {
       const totalDonations = team.donations.reduce((sum, donation) => sum + donation.amount, 0);
       const totalShirtPoints = team.shirtSales.reduce((sum, sale) => sum + (sale.quantity * 10), 0);
       const approvedPhotos = team.photos.filter(photo => photo.approved);
       const totalPhotoPoints = approvedPhotos.length * 50; // Assuming each approved photo is  5 points
       const totalScore = totalDonations + totalShirtPoints + totalPhotoPoints;
+      const memberCount = await prisma.user.count({
+        where: {teamId: team.id},
+      });
       return {
         id: team.id,
         name: team.name,
@@ -454,9 +459,10 @@ async function emitLeaderboardUpdate() { //live leaderboard update
         totalPhotoPoints: totalPhotoPoints,
         approvedPhotosCount: approvedPhotos.length,
         photoCount: team._count.photos,
+        memberCount: memberCount,
         createdAt: team.createdAt
       };
-    });
+    }));
 
     leaderboard.sort((a, b) => b.totalScore - a.totalScore);
     const rankedLeaderboard = leaderboard.map((team, index) => ({
@@ -470,7 +476,7 @@ async function emitLeaderboardUpdate() { //live leaderboard update
   }
 }
 
-//webhook with
+//webhook 
 async function handleCompletedPayment(session){
   try{
     const {teamId, userId} = session.metadata || {};
@@ -491,26 +497,12 @@ async function handleCompletedPayment(session){
     console.log('Donation saved:', donation.id);
 
     await emitLeaderboardUpdate();
-    io.to('leaderboard').emit('new-donation', {
-      teamId,
-      amount,
-      donationId: donation.id,
-      timeStamp: new Date()
-    });
+    
   } catch(err) {
     console.error('Error handling completed payment:', err);
   }
 }
 
-//Delete when FrontEnd is ready
-app.post('/test-socket', async (req, res) =>{
-  await emitLeaderboardUpdate();
-  io.to('leaderboard').emit('test-event', {
-    message: 'Test event received',
-    timeStamp: new Date()
-  });
-  res.json({message: 'Socket test sent!'});
-})
 
 app.get('/photos/pending', async (req, res) => {
   try {
@@ -587,6 +579,6 @@ app.get('/photos/approved', async (req, res) => {
   }
 })
 
-server.listen(4243, '0.0.0.0', () => {
-  console.log('Express & SockerIO at http://0.0.0.0:4243');
+server.listen(port, '0.0.0.0', () => {
+  console.log(`Express & Socket.io server running on port ${port}`);
 });

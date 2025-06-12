@@ -5,3 +5,9 @@ docker-compose.yml
 /src/generated/prisma
 
 test-socket.html
+
+config.toml
+
+Dockerfile
+
+PhiPilot.json
