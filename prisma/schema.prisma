@@ -7,24 +7,40 @@ generator client {
   provider = "prisma-client-js"
 }
 
+enum UserRole {
+  STUDENT 
+  COACH
+  ADMIN
+}
+
 model Team {
   id        String    @id @default(uuid())
   name      String    @unique
+  teamCode  String    @unique
+  isActive  Boolean  @default(true)
   createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
   members   User[]
   donations Donation[]
   photos    Photo[]
   shirtSales ShirtSale[]
+  coachId   String?
+  coach     User?     @relation("CoachTeams", fields: [coachId], references: [id])
 }
 
 model User {
   id        String    @id @default(uuid())
   name      String
   email     String    @unique
+  password  String    @default("CHANGE_ME")
   team      Team?     @relation(fields: [teamId], references: [id])
   teamId    String?
+  role      UserRole  @default(STUDENT)
   createdAt DateTime  @default(now())
+  updatedAt DateTime  @default(now())
+  isActive  Boolean   @default(true)
   donations    Donation[]
+  coachedTeams  Team[]  @relation("CoachTeams")
 }
 
 model Donation {

@@ -17,6 +17,8 @@ const http = require('http');
 const { timeStamp, time } = require('console');
 const { emit } = require('process');
 const cors = require('cors');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 
 
 const stripeClient = Stripe(process.env.STRIPE_SECRET_KEY, {
@@ -578,6 +580,438 @@ app.get('/photos/approved', async (req, res) => {
     return res.status(500).json({error: err.message});
   }
 })
+
+const authenticationToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if(!token) {
+    return res.status(401).json({error: 'Access token is required'});
+  }
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({error: 'Invalid token'});
+    req.user = user;
+    next();
+  });
+};
+
+const requireRole = (roles) => {
+  return (req, res, next) => {
+    if (!roles.includes(req.user.role)){
+      return res.status(403).json({error: 'Forbidden: Insufficient permissions'});
+    }
+    next();
+  };
+};
+
+app.post('/auth/register', async (req, res) => {
+  try {
+    const {name, email, password, role = 'STUDENT', teamId} = req.body;
+    const existingUser = await prisma.user.findUnique({ where: {email} });
+    if(existingUser) {
+      return res.status(400).json({error: 'User already exists'});
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 12);
+
+    const user = await prisma.user.create({
+      data: {
+        name,
+        email,
+        password: hashedPassword,
+        role,
+        teamId: teamId || null
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        team: {select: {id: true, name: true}},
+      }
+    });
+
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    res.status(201).json({
+      message: 'User registered successfully',
+      user,
+      token,
+    });
+  } catch (err) {
+    console.error('Error registering user:', err);
+    res.status(500).json({error: 'Internal server error'});
+  }
+})
+
+app.post('/auth/login', async (req, res) => {
+  try {
+    const {email, password} = req.body;
+
+    const user = await prisma.user.findUnique({
+      where: {email}, include: {team: true, coachedTeams: true}
+    });
+
+    if (!user) {
+      return res.status(404).json({error: 'User not found'});
+    }
+
+    const validPassword =  await bcrypt.compare(password, user.password);
+    if (!validPassword) {
+      return res.status(401).json({error: 'Invalid password'});
+    }
+
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    res.json({
+      message: 'Login successful',
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        team: user.team,
+        coachedTeams: user.coachedTeams
+      },
+      token,
+    });
+  } catch (err) {
+    console.error('Error logging in:', err);
+    res.status(500).json({error: 'Internal server error'});
+}
+});
+
+app.get('/auth/me', authenticationToken, async (req, res) => { 
+  try {
+    const user = await prisma.user.findUnique({
+      where: {id: req.user.id},
+      include: {team: true, coachedTeams: true},
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        team: true,
+        coachedTeams: true
+      }
+    });
+    if (!user) {
+      return res.status(404).json({error: 'User not found'});
+    }
+    res.json({user})
+  } catch (error) {
+    console.error('Error fetching user:', error);
+    res.status(500).json({error: 'Internal server error'});
+  }
+}) //Get current user info
+
+app.get('/admin/users', authenticationToken, requireRole(['ADMIN']), async (req, res) => {
+  try {
+    const users = await prisma.user.findMany({
+      include: {
+        team: { select: {id: true, name: true, teamCode: true}},
+        coachedTeams: { select: {id: true, name: true, teamCode: true}},
+      },
+      orderBy: {createdAt: 'desc'},
+    });
+
+    res.json(users);
+  } catch (err) {
+    console.error('Error fetching users:', err);
+    res.status(500).json({error: 'Internal server error'});
+  }
+});
+
+app.get('/admin/teams', authenticationToken, requireRole(['ADMIN']), async (req, res) => {
+  try {
+    const teams = await prisma.team.findMany({
+      include:{
+        members: {
+          select: {id: true, name: true, email: true, role: true},
+        },
+        coach: {
+          select: {id: true, name: true, email: true},
+        },
+        _count: {
+          select: {
+            members: true,
+            donations: true,
+            shirtSales: true,
+            photos: true,
+          }
+        }
+      },
+      orderBy: {createdAt: 'desc'},
+    });
+    res.json(teams);
+  } catch (err) {
+    console.error('Error fetching teams:', err);
+    res.status(500).json({error: 'Failed to fetch teams'});
+}
+});
+
+app.post('/admin/teams', authenticationToken, requireRole(['ADMIN']), async (req, res) => {
+  try {
+    const {name, coachId} = req.body;
+    const generateTeamCode = () => {
+      return Math.random().toString(36).substring(2, 8).toUpperCase();
+    };
+    let teamCode;
+    let isUnique = false;
+    while (!isUnique) {
+      teamCode = generateTeamCode();
+      const existingTeam = await prisma.team.findUnique({ where: { teamCode } });
+      if (!existingTeam) {
+        isUnique = true;
+      }
+    }
+
+    const team = await prisma.team.create({
+      data: {
+        name,
+        teamCode,
+        coachId: coachId || null
+      },
+      include: {
+        coach: {
+          select: {id: true, name: true, email: true},
+        }
+      } 
+    });
+
+    res.status(201).json({
+      message: 'Team created successfully',
+      team,
+    });
+  } catch (err) {
+    console.error('Error creating team:', err);
+    res.status(500).json({error: 'Failed to create team'});
+  }
+});
+
+app.put('/admin/teams/:id', authenticationToken, requireRole(['ADMIN']), async (req, res) => {
+  try {
+    const {id} = req.params;
+    const {name, coachId, isActive} = req.body;
+    const team = await prisma.team.update({
+      where: {id},
+      data: {
+        name, coachId: coachId || null, isActive
+      },
+      include: {
+        coach: {
+          select: { id: true, name: true, email: true },
+        },
+        members: {
+          select: { id: true, name: true, email: true, role: true },
+        }
+      }
+    });
+    res.json({
+      message: 'Team updated successfully',
+      team,
+    });
+  } catch (err) {
+    console.error('Error updating team:', err);
+    res.status(500).json({error: 'Failed to update team'});
+  }
+})
+
+app.put('/admin/users/:id', authenticationToken, requireRole(['ADMIN']), async (req, res) => {
+  try {
+    const {id} = req.params;
+    const {role, teamId, isActive} = req.body;
+
+    const user = await prisma.user.update({
+      where: {id},
+      data: {
+        role,
+        teamId: teamId || null,
+        isActive
+      },
+      include: {
+        team: {select: {id: true, name: true, teamCode: true}},
+      }
+    });
+
+    res.json({
+      message: 'User updated successfully',
+      user,
+    });
+  } catch (err) {
+    console.error('Error updating user:', err);
+    res.status(500).json({error: 'Failed to update user'});
+  }
+});
+
+app.get('/admin/coaches', authenticationToken, requireRole(['ADMIN']), async (req, res) => {
+    try {
+      const coaches = await prisma.user.findMany({
+        where: { role: 'COACH', isActive: true },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          coachedTeams: {select: {id: true, name: true}},
+        },
+        orderBy: {createdAt: 'desc'},
+      });
+      res.json(coaches);
+    } catch (err) {
+      console.error('Error fetching coaches:', err);
+      res.status(500).json({error: 'Failed to fetch coaches'});
+    }
+})
+
+app.post('/auth/register-team', async(req, res) => {
+  try {
+    const {teamCode, name, email, password} = req.body;
+    const team = await prisma.team.findUnique({
+      where: {teamCode},
+      select: {id: true, name: true, isActive: true},
+    });
+    if(!team) {
+      return res.status(400).json({error: 'Invalid team code'});
+    }
+    if(!team.isActive) {
+      return res.status(400).json({error: 'Team registration is not active'});
+    }
+
+    const existingUser = await prisma.user.findUnique({where: {email}});
+    if(existingUser) {
+      return res.status(400).json({error: 'User already exists'});
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 12);
+    const user = await prisma.user.create({
+      data: {
+        name,
+        email,
+        password: hashedPassword,
+        role: 'STUDENT',
+        teamId: team.id
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        team: {select: {id: true, name: true, teamCode: true}},
+      }
+    });
+      const token = jwt.sign(
+        { id: user.id, email: user.email, role: user.role },
+        process.env.JWT_SECRET,
+        { expiresIn: '7d' }
+      );
+      res.status(201).json({
+        message: `Successfully joined ${team.name}`,
+        user,
+        token,
+      });
+  } catch (err) {
+    console.error('Error registering team:', err);
+    res.status(500).json({error: 'Registration failed'});
+  }
+})
+
+app.post('/auth/join-team', async (req, res) => {
+  try {
+    const {teamCode} = req.body;
+    const userId = req.user.id; 
+
+    const team = await prisma.team.findUnique({
+      where: {teamCode},
+      select: {id: true, name: true, isActive: true},
+    });
+    if(!team) {
+      return res.status(400).json({error: 'Invalid team code'});
+    }
+    if(!team.isActive) {
+      return res.status(400).json({error: 'Team is not active'});
+    }
+
+    const user = await prisma.user.update({
+      where: {id: userId},
+      data: {teamId: team.id},
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        team: {select: {id: true, name: true, teamCode: true}},
+      }
+    });
+    res.json({
+      message: `Successfully joined ${team.name}`,
+      user,
+    });
+  } catch (err) {
+    console.error('Error joining team:', err);
+    res.status(500).json({error: 'Failed to join team'});
+  }
+})
+
+// TEMPORARY: Populate team codes for existing teams
+app.post('/admin/populate-team-codes', authenticationToken, requireRole(['ADMIN']), async (req, res) => {
+  try {
+    // Get all teams without team codes
+    const teamsWithoutCodes = await prisma.team.findMany({
+      where: {
+        teamCode: null
+      }
+    });
+
+    console.log(`Found ${teamsWithoutCodes.length} teams without codes`);
+
+    // Generate unique codes for each team
+    const updatedTeams = [];
+    
+    for (const team of teamsWithoutCodes) {
+      // Generate a simple team code based on team name
+      let teamCode = team.name.substring(0, 4).toUpperCase() + Math.random().toString(36).substring(2, 5).toUpperCase();
+      
+      // Make sure it's unique
+      let isUnique = false;
+      while (!isUnique) {
+        const existingTeam = await prisma.team.findUnique({
+          where: { teamCode }
+        });
+        if (!existingTeam) {
+          isUnique = true;
+        } else {
+          teamCode = team.name.substring(0, 4).toUpperCase() + Math.random().toString(36).substring(2, 5).toUpperCase();
+        }
+      }
+
+      // Update the team with the new code
+      const updatedTeam = await prisma.team.update({
+        where: { id: team.id },
+        data: { teamCode }
+      });
+
+      updatedTeams.push(updatedTeam);
+      console.log(`Updated team "${team.name}" with code: ${teamCode}`);
+    }
+
+    res.json({
+      message: `Successfully generated team codes for ${updatedTeams.length} teams`,
+      teams: updatedTeams
+    });
+  } catch (error) {
+    console.error('Error populating team codes:', error);
+    res.status(500).json({ error: 'Failed to populate team codes' });
+  }
+});
 
 server.listen(port, '0.0.0.0', () => {
   console.log(`Express & Socket.io server running on port ${port}`);
