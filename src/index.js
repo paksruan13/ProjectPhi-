@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const { Pool } = require('pg');
 const Redis = require('ioredis');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, DeleteObjectCommand} = require('@aws-sdk/client-s3');
 const app = express();
 const port = process.env.PORT || 4243;
 const{ PrismaClient } = require('@prisma/client');
@@ -193,6 +193,27 @@ app.get('/users', async(req, res) => {
   } catch (err) {
     console.error('Error fetching user:', err);
     return res.status(500).json({error: err.message});
+  }
+});
+
+app.get('/teams/:id/members', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const members = await prisma.user.findMany({
+      where: { teamId: id },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+      },
+      orderBy: {
+          createdAt: 'asc'
+      }
+    });
+    res.json(members);
+  } catch (err) {
+    console.error(`Error fetching members for team ${id}:`, err);
+    res.status(500).json({ error: 'Failed to fetch team members' });
   }
 });
 
@@ -548,10 +569,23 @@ app.put('/photos/:id/reject', async(req, res) => {
   const {reason} = req.body;
 
   try{
-    const photo = await prisma.photo.delete({
+    const photo = await prisma.photo.findUnique({
       where: {id}
     });
-    console.log('Photo Rejected!', photo.id);
+    if (!photo) {
+      return res.status(404).json({error: 'Photo not found'});
+    }
+    const objectKey = photo.url.split('/testbucket/')[1];
+
+    await s3.send(new DeleteObjectCommand({
+      Bucket: 'test-bucket',
+      Key: objectKey,
+    }));
+
+    await prisma.photo.delete({
+      where: {id},
+    });
+    console.log('Photo rejected and removed from Database', objectKey);
 
     io.to('leaderboard').emit('photo-rejected', {
       photoId: photo.id,
@@ -564,7 +598,7 @@ app.put('/photos/:id/reject', async(req, res) => {
     console.error('Error rejecting photo:', err);
     return res.status(500).json({error: err.message});
   }
-})
+});
 
 app.get('/photos/approved', async (req, res) => {
   try{
