@@ -17,12 +17,9 @@ const http = require('http');
 const { timeStamp, time } = require('console');
 const { emit } = require('process');
 const cors = require('cors');
-<<<<<<< HEAD
-// hjhjhj
-=======
+
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
->>>>>>> 82a13ed311e9d475fd3a520e42fbcadcde8f1f29
 
 
 const stripeClient = Stripe(process.env.STRIPE_SECRET_KEY, {
