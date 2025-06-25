@@ -26,6 +26,7 @@ model Team {
   shirtSales ShirtSale[]
   coachId   String?
   coach     User?     @relation("CoachTeams", fields: [coachId], references: [id])
+  activitySubmissions   ActivitySubmission[]
 }
 
 model User {
@@ -37,10 +38,13 @@ model User {
   teamId    String?
   role      UserRole  @default(STUDENT)
   createdAt DateTime  @default(now())
-  updatedAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
   isActive  Boolean   @default(true)
   donations    Donation[]
   coachedTeams  Team[]  @relation("CoachTeams")
+  createdActivities  Activity[]    @relation("CreatedActivities")
+  Submissions   ActivitySubmission[]    @relation("UserSubmissions")
+  reviewedSubmissions   ActivitySubmission[]    @relation("ReviewedSubmissions")
 }
 
 model Donation {
@@ -71,3 +75,69 @@ model ShirtSale {
   teamId    String
   soldAt    DateTime @default(now())
 }
+
+model ActivityCategory {
+  id          String      @id @default(uuid())
+  name        String      @unique
+  description String?
+  color       String? //for UI
+  icon        String?
+  activities  Activity[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+}
+
+model Activity {
+  id          String      @id @default(uuid())
+  title       String
+  description String
+  points      Int
+  type        ActivityType
+  isPublished Boolean     @default(false)
+  isActive    Boolean     @default(true)
+  requirements  Json?
+  categoryId  String
+  category    ActivityCategory @relation(fields: [categoryId], references: [id])
+  submission  ActivitySubmission[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  createdById String?
+  createdBy   User?       @relation("CreatedActivities", fields: [createdById], references: [id])
+}
+
+model ActivitySubmission {
+  id             String       @id @default(uuid())
+  activityId     String
+  activity       Activity     @relation(fields: [activityId], references: [id])
+  userId         String       
+  user           User         @relation("UserSubmissions", fields: [userId], references: [id])
+  teamId         String?      
+  team           Team?        @relation(fields: [teamId], references: [id])
+  submissionData Json?        
+  notes          String?
+  pointsAwarded  Int?
+  status         SubmissionStatus   @default(PENDING)
+  reviewedById   String?
+  reviewedBy     User?        @relation("ReviewedSubmissions", fields: [reviewedById], references: [id])
+  reviewNotes    String?
+  created        DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  reviewedAt     DateTime?
+}
+
+enum ActivityType {
+  PHOTO_UPLOAD
+  PURCHASE
+  SCAVENGER
+  MANUAL_ENTRY
+  DONATION
+  TEAM_CHALLENGE
+}
+
+enum SubmissionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  DRAFT
+}
+
