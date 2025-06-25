@@ -38,7 +38,7 @@ model User {
   teamId    String?
   role      UserRole  @default(STUDENT)
   createdAt DateTime  @default(now())
-  updatedAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
   isActive  Boolean   @default(true)
   donations    Donation[]
   coachedTeams  Team[]  @relation("CoachTeams")
@@ -92,7 +92,6 @@ model Activity {
   title       String
   description String
   points      Int
-  type        ActivityType
   isPublished Boolean     @default(false)
   isActive    Boolean     @default(true)
   requirements  Json?
@@ -125,14 +124,6 @@ model ActivitySubmission {
   reviewedAt     DateTime?
 }
 
-enum ActivityType {
-  PHOTO_UPLOAD
-  PURCHASE
-  SCAVENGER
-  MANUAL_ENTRY
-  DONATION
-  TEAM_CHALLENGE
-}
 
 enum SubmissionStatus {
   PENDING

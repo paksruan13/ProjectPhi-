@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import UserManagement from './UserManagement';
 import TeamManagement from './TeamManagement';
+import ActivityManagement from './ActivityManagement';
 
 const AdminDashboard = () => {
   const [activeTab, setActiveTab] = useState('users');
@@ -11,7 +12,7 @@ const AdminDashboard = () => {
   const tabs = [
     { id: 'users', label: 'User Management', icon: '👥' },
     { id: 'teams', label: 'Team Management', icon: '🏆' },
-    { id: 'coaches', label: 'Coach Assignment', icon: '🎯' },
+    { id: 'activities', label: 'Activity Management', icon: '🎯' },
     { id: 'analytics', label: 'Analytics', icon: '📊' }
   ];
 
@@ -67,20 +68,13 @@ const AdminDashboard = () => {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {activeTab === 'users' && <UserManagement />}
         {activeTab === 'teams' && <TeamManagement />}
-        {activeTab === 'coaches' && <CoachAssignment />}
+        {activeTab === 'activities' && <ActivityManagement />}
         {activeTab === 'analytics' && <Analytics />}
       </div>
     </div>
   );
 };
 
-// Placeholder components for other tabs
-const CoachAssignment = () => (
-  <div className="bg-white rounded-lg shadow p-6">
-    <h2 className="text-xl font-semibold mb-4">Coach Assignment</h2>
-    <p className="text-gray-600">Coach assignment functionality coming soon...</p>
-  </div>
-);
 
 const Analytics = () => (
   <div className="bg-white rounded-lg shadow p-6">
