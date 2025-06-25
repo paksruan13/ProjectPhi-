@@ -23,6 +23,7 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.0",
     "pg": "^8.16.0",
+    "react-router-dom": "^7.6.2",
     "socket.io": "^4.8.1",
     "stripe": "^18.2.0",
     "uuid": "^11.0.5"

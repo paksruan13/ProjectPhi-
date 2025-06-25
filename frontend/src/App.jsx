@@ -4,6 +4,7 @@ import Leaderboard from './components/Leaderboard';
 import Login from './components/auth/Login';
 import Register from './components/auth/Register';
 import AdminDashboard from './components/admin/AdminDashboard';
+import CoachDashboard from './components/CoachDashboard';
 
 const AppContent = () => {
   const [showLogin, setShowLogin] = useState(false);
@@ -12,22 +13,15 @@ const AppContent = () => {
   
   const { user, loading, logout, isCoach, isAdmin } = useAuth();
 
-  useEffect(() => {
-    window.setCurrentView = setCurrentView;
-    return () => {
-      delete window.setCurrentView;
-    }
-  }, []);
+  
 
   useEffect(() => {
     if(user) {
       console.log('User logged in:', user);
       setShowLogin(false);
       setShowRegister(false);
-    } else if (currentView === 'admin' && !isAdmin) {
-      setCurrentView('leaderboard'); 
     }
-  }, [user, isAdmin, currentView]);
+  }, [user]);
 
   // Handle opening login modal
   const handleLoginClick = () => {
@@ -75,6 +69,18 @@ const AppContent = () => {
               >
                 Leaderboard
               </button>
+              {isCoach && (
+                <button
+                  onClick={() => setCurrentView('coach')}
+                  className={`px-3 py-2 rounded-md text-sm font-medium ${
+                    currentView === 'coach'
+                      ? 'bg-yellow-100 text-yellow-700'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Coach Dashboard
+                </button>
+              )}
               
               {isAdmin && (
                 <button
@@ -162,6 +168,7 @@ const AppContent = () => {
       {/* Main content */}
       <main>
         {currentView === 'leaderboard' && <Leaderboard />}
+        {currentView === 'coach' && isCoach && <CoachDashboard />} {/* <-- ADD THIS LINE */}
         {currentView === 'admin' && isAdmin && <AdminDashboard />}
         {currentView === 'admin' && !isAdmin && (
           <div className="max-w-7xl mx-auto px-4">

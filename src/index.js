@@ -3,7 +3,6 @@ const express = require('express');
 const { Pool } = require('pg');
 const Redis = require('ioredis');
 const { S3Client, PutObjectCommand, DeleteObjectCommand} = require('@aws-sdk/client-s3');
-const app = express();
 const port = process.env.PORT || 4243;
 const{ PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
@@ -20,16 +19,14 @@ const cors = require('cors');
 
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const app = express();
 
 
-const stripeClient = Stripe(process.env.STRIPE_SECRET_KEY, {
-  apiVersion: '2024-06-20',
-});
 
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:5173", // Adjust to frontend URL
+    origin: ["http://localhost:5173", 'http://localhost:5174'], // Adjust to frontend URL
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", 'stripe-signature'],
@@ -37,11 +34,18 @@ const io = new Server(server, {
 });
 
 app.use(cors({
-  origin: ["http://localhost:5173"], // Adjust to your frontend URL
+  origin: ["http://localhost:3000", 'http://localhost:5173', 'http://localhost:5174'], // Adjust to your frontend URL
   credentials: true, // Allow cookies to be sent
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", 'stripe-signature'],
-}))
+}));
+
+app.use(express.json());
+
+
+const stripeClient = Stripe(process.env.STRIPE_SECRET_KEY, {
+  apiVersion: '2024-06-20',
+});
 
 // Stripe webhook handler
 app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
@@ -77,7 +81,7 @@ app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) =
   res.json({received: true});
 });
 
-app.use(express.json());
+
 
 // 3. Postgres
 const db = new Pool({
@@ -641,9 +645,24 @@ const requireRole = (roles) => {
 };
 
 app.post('/auth/register', async (req, res) => {
+  console.log('=== REGISTRATION ATTEMPT ===');
+  console.log('Request body:', req.body);
+  
   try {
     const {name, email, password, role = 'STUDENT', teamId} = req.body;
+    
+    // Validate role is one of the allowed enum values
+    const validRoles = ['STUDENT', 'COACH', 'ADMIN'];
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({error: 'Invalid role. Must be STUDENT, COACH, or ADMIN'});
+    }
+    
+    if (!name || !email || !password) {
+      return res.status(400).json({error: 'Missing required fields'});
+    }
+    
     const existingUser = await prisma.user.findUnique({ where: {email} });
+    
     if(existingUser) {
       return res.status(400).json({error: 'User already exists'});
     }
@@ -655,7 +674,7 @@ app.post('/auth/register', async (req, res) => {
         name,
         email,
         password: hashedPassword,
-        role,
+        role: role, // This will now work with the enum
         teamId: teamId || null
       },
       select: {
@@ -663,7 +682,7 @@ app.post('/auth/register', async (req, res) => {
         name: true,
         email: true,
         role: true,
-        team: {select: {id: true, name: true}},
+        team: { select: { id: true, name: true } }
       }
     });
 
@@ -679,10 +698,11 @@ app.post('/auth/register', async (req, res) => {
       token,
     });
   } catch (err) {
-    console.error('Error registering user:', err);
+    console.error('=== REGISTRATION ERROR ===');
+    console.error('Error:', err);
     res.status(500).json({error: 'Internal server error'});
   }
-})
+});
 
 app.post('/auth/login', async (req, res) => {
   try {
@@ -1045,6 +1065,79 @@ app.post('/admin/populate-team-codes', authenticationToken, requireRole(['ADMIN'
   } catch (error) {
     console.error('Error populating team codes:', error);
     res.status(500).json({ error: 'Failed to populate team codes' });
+  }
+});
+
+app.post('/api/populate-users', async (req, res) => {
+  try {
+    // Corrected: All emails are now unique
+    const sampleUsers = [
+      { name: 'Admin User', email: 'admin@example.com', role: 'ADMIN' },
+      { name: 'Coach Carter', email: 'coach.carter@example.com', role: 'COACH' },
+      { name: 'Student Alice', email: 'student.alice@example.com', role: 'STUDENT' },
+      { name: 'Student Bob', email: 'student.bob@example.com', role: 'STUDENT' },
+    ];
+
+    const populatedUsers = [];
+    const defaultPassword = 'password123'; // A default password for all sample users
+
+    for (const userData of sampleUsers) {
+      const { name, email, role } = userData;
+
+      // Check if user already exists to prevent errors on re-running
+      const existingUser = await prisma.user.findUnique({ where: { email } });
+      if (existingUser) {
+        console.log(`User with email ${email} already exists. Skipping.`);
+        continue; // Skip to the next user in the loop
+      }
+
+      // Corrected: Hash the default password
+      const hashedPassword = await bcrypt.hash(defaultPassword, 12);
+
+      // Corrected: Use 'prisma.user.create' and include the hashed password
+      const newUser = await prisma.user.create({
+        data: {
+          name,
+          email,
+          role,
+          password: hashedPassword // Add the required password field
+        },
+         select: { // Select only non-sensitive fields to return
+          id: true,
+          name: true,
+          email: true,
+          role: true
+        }
+      });
+
+      populatedUsers.push(newUser);
+      console.log(`Generated sample user "${name}" with email: ${email}`);
+    }
+
+    res.json({
+      message: `Successfully generated ${populatedUsers.length} new sample users`,
+      users: populatedUsers
+    });
+  } catch (error) {
+    console.error('Error generating sample users:', error);
+    res.status(500).json({ error: 'Failed to generate sample users' });
+  }
+});
+
+app.get('/admin/users', async (req, res) => {
+  try {
+    const users = await prisma.user.findMany({
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        createdAt: true
+      }
+    });
+    res.json(users);
+  } catch (error) {
+    res.status(500).json({error: 'Failed to fetch users'});
   }
 });
 

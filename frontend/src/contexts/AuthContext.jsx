@@ -31,11 +31,13 @@ export const AuthProvider = ({ children }) => {
                     } else {
                         localStorage.removeItem('token');
                         setToken(null);
+                        setUser(null);
                     }
                 } catch (error) {
                     console.error('Auth Check Failed:', error);
                     localStorage.removeItem('token');
                     setToken(null);
+                    setUser(null);
                 }
             }
             setLoading(false);
@@ -119,9 +121,7 @@ export const AuthProvider = ({ children }) => {
         setToken(null);
         localStorage.removeItem('token');
 
-        if(window.setCurrentView) {
-            window.setCurrentView('leaderboard'); 
-        }
+        
     };
 
     const value = {
