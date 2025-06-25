@@ -694,23 +694,26 @@ app.get('/auth/me', authenticationToken, async (req, res) => {
   try {
     const user = await prisma.user.findUnique({
       where: {id: req.user.id},
-      include: {team: true, coachedTeams: true},
       select: {
         id: true,
         name: true,
         email: true,
         role: true,
-        team: true,
-        coachedTeams: true
+        team: {
+          select: {id: true, name: true, teamCode: true}
+        },
+        coachedTeams: {
+        select: {id: true, name: true, teamCode: true}
+        }
       }
     });
     if (!user) {
       return res.status(404).json({error: 'User not found'});
     }
-    res.json({user})
-  } catch (error) {
-    console.error('Error fetching user:', error);
-    res.status(500).json({error: 'Internal server error'});
+    res.json({user});
+  } catch (err) {
+    console.error('Error fetching user info:', err);
+    return res.status(500).json({error: 'Internal server error'});
   }
 }) //Get current user info
 
@@ -961,55 +964,147 @@ app.post('/auth/join-team', async (req, res) => {
   }
 })
 
-// TEMPORARY: Populate team codes for existing teams
-app.post('/admin/populate-team-codes', authenticationToken, requireRole(['ADMIN']), async (req, res) => {
-  try {
-    // Get all teams without team codes
-    const teamsWithoutCodes = await prisma.team.findMany({
-      where: {
-        teamCode: null
-      }
+
+//Get all activity cats (for admin dropdown)
+app.get('/admin/activity-categories', authenticationToken, requireRole(['ADMIN']), async(req, res) => {
+  try{
+    const categories = await prisma.activityCategory.findMany({
+      include: {
+        activities: {
+          select: { id: true, title: true, isPulished: true }
+        }
+      },
+      orderBy: { name: 'asc'}
     });
+    res.json(categories);
+  } catch(error) {
+    console.error('Error fetching categories:', error);
+    res.status(500).json({ error: 'Failed to fetch categories '});
+  }
+})
 
-    console.log(`Found ${teamsWithoutCodes.length} teams without codes`);
+//Create new activity category
+app.post('/admin/activity-categories', authenticationToken, requireRole(['ADMIN']), async(req, res) => {
+  try {
+    const {name, description, color, icon} = req.body;
+    const category = await prisma.activityCategory.create({
+      data: {name, description, color, icon}
+    });
+    res.status(201).json(category);
+  } catch (error) {
+    console.error('Error creating category:', error);
+    if (error.code === 'P2002') {
+      return res.status(400).json({ error: 'Category Name Already Exists '});
+    }
+    res.status(500).json({ error: 'Failed to create category '});
+  }
+});
 
-    // Generate unique codes for each team
-    const updatedTeams = [];
-    
-    for (const team of teamsWithoutCodes) {
-      // Generate a simple team code based on team name
-      let teamCode = team.name.substring(0, 4).toUpperCase() + Math.random().toString(36).substring(2, 5).toUpperCase();
-      
-      // Make sure it's unique
-      let isUnique = false;
-      while (!isUnique) {
-        const existingTeam = await prisma.team.findUnique({
-          where: { teamCode }
-        });
-        if (!existingTeam) {
-          isUnique = true;
-        } else {
-          teamCode = team.name.substring(0, 4).toUpperCase() + Math.random().toString(36).substring(2, 5).toUpperCase();
+//Get all activities (admin view)
+app.get('/admin/activities', authenticationToken, requireRole(['ADMIN']), async(req, res) => {
+  try{
+    const activities = await prisma.activity.findMany({
+      include: {
+        category: true,
+        createdBy: {
+          select: { id: true, name: true}
+        },
+        submission: {
+          select: { id: true, status: true}
+        }
+      },
+       orderBy: { createdAt: 'desc' }
+    });
+    const activitiesWithCounts = activities.map(activity => ({
+      ...activity, submissionCount: activity.subsmission.length,
+      pendingCount: activity.submissions.filter(s => s.status === 'PENDING').length,
+      approvedCount: activity.submissions.filter(s => s.status === 'APPROVED').length
+    }));
+    res.json(activitiesWithCounts);
+  } catch (error) {
+    console.error('Error fetching activities:', error);
+    res.status(500).json({error: 'Failed to fetch activities'});
+  }
+});
+
+
+//Create new activity
+app.post('/admin/activities', authenticationToken, requireRole(['ADMIN']), async(req, res) => {
+  try {
+    const { title, description, points, type, categoryId, requiremnets, isPublished } = req.body;
+    const activity = await prisma.activity.create({
+      data: {
+        title, description, points, type, categoryId, requirements: requirements || {},
+        isPublished: isPublished || false,
+        createdById: req.user.id  
+      },
+      include: {
+        category: true,
+        createdBy: {
+          select: { id: true, name: true }
         }
       }
-
-      // Update the team with the new code
-      const updatedTeam = await prisma.team.update({
-        where: { id: team.id },
-        data: { teamCode }
-      });
-
-      updatedTeams.push(updatedTeam);
-      console.log(`Updated team "${team.name}" with code: ${teamCode}`);
-    }
-
-    res.json({
-      message: `Successfully generated team codes for ${updatedTeams.length} teams`,
-      teams: updatedTeams
     });
+    res.status(201).json(activity);
+  } catch(error) {
+    console.error('Error creating activity:', error);
+    res.status(500).json({ error: 'Failed to create activity' });
+  }
+})
+
+//Update Activity
+app.put('/admin/activities/:id', authenticationToken, requireRole(['ADMIN']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, description, points, type, categoryId, requirements, isPublished, isActive } = req.body;
+    
+    const activity = await prisma.activity.update({
+      where: { id },
+      data: {
+        title,
+        description,
+        points,
+        type,
+        categoryId,
+        requirements,
+        isPublished,
+        isActive
+      },
+      include: {
+        category: true,
+        createdBy: {
+          select: { id: true, name: true }
+        }
+      }
+    });
+    res.json(activity);
   } catch (error) {
-    console.error('Error populating team codes:', error);
-    res.status(500).json({ error: 'Failed to populate team codes' });
+    console.error('Error updating activity:', error);
+    res.status(500).json({ error: 'Failed to update activity' });
+  }
+});
+
+app.get('/activities', authenticationToken, async (req, res) => {
+  try {
+    const activities = await prisma.activity.findMany({
+      where: {
+        isPublished: true,
+        isActive: true
+      },
+      include: {
+        category: true,
+        submissions: {
+          where: { userId: req.user.id },
+          select: { id: true, status: true, pointsAwarded: true, createdAt: true }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+    
+    res.json(activities);
+  } catch (error) {
+    console.error('Error fetching activities:', error);
+    res.status(500).json({ error: 'Failed to fetch activities' });
   }
 });
 
