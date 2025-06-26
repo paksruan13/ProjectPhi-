@@ -9,7 +9,7 @@ const Leaderboard = () => {
 
     const fetchLeaderboard = async () => {
         try {
-            const response = await fetch('http://localhost:4243/leaderboard');
+            const response = await fetch('http://localhost:4243/api/leaderboard');
             
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);

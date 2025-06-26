@@ -26,7 +26,7 @@ const getTeamScore = async (req, res) => {
 };
 
 const createTeam = async (req, res) => {
-  const { name } = req.body;
+  const { name, coachId } = req.body;
   if (!name) {
     return res.status(400).json({ error: 'Name is required' });
   }
