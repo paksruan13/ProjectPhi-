@@ -1,7 +1,17 @@
 const { prisma } = require('../config/database');
 
 const getAllTeams = async () => {
-  return await prisma.team.findMany();
+  return await prisma.team.findMany({
+    include: {
+      coach: {
+        select: { id: true, name: true, email: true },
+      },
+      _count: {
+        select: { members: true, donations: true, shirtSales: true, photos: true },
+      }
+    },
+    orderBy: { name: 'desc' }
+  });
 };
 
 const getTeamScore = async (teamId) => {

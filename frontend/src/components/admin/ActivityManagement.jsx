@@ -17,7 +17,7 @@ const ActivityManagement = () => {
 
 const fetchActivities = async () => {
     try {
-        const response = await fetch('http://localhost:4243/admin/activities', {
+        const response = await fetch('http://localhost:4243/api/admin/activities', {
             headers: { 'Authorization': `Bearer ${token}` }
         });
 
@@ -37,7 +37,7 @@ const fetchActivities = async () => {
 
 const fetchCategories = async () => {
     try{
-        const response = await fetch('http://localhost:4243/admin/activity-categories', {
+        const response = await fetch('http://localhost:4243/api/admin/activity-categories', {
             headers: { 'Authorization': `Bearer ${token}` }
         });
         if(response.ok) {
@@ -61,7 +61,7 @@ const fetchCategories = async () => {
 
   const toggleActivityStatus = async (activityId, isPublished) => {
     try {
-      const response = await fetch(`http://localhost:4243/admin/activities/${activityId}`, {
+      const response = await fetch(`http://localhost:4243/api/admin/activities/${activityId}`, {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -261,8 +261,8 @@ const ActivityForm = ({ activity, categories, onClose, onSave, token }) => {
 
         try {
             const url = activity
-            ? `http://localhost:4243/admin/activities/${activity.id}`
-            : 'http://localhost:4243/admin/activities';
+            ? `http://localhost:4243/api/admin/activities/${activity.id}`
+            : 'http://localhost:4243/api/admin/activities';
 
             const method = activity ? 'PUT' : 'POST';
             const response = await fetch(url, {

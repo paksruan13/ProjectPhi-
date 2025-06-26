@@ -24,7 +24,7 @@ const getAllActivities = async () => {
       createdBy: {
         select: { id: true, name: true }
       },
-      submissions: {
+      submission: {
         select: { id: true, status: true }
       }
     },
@@ -33,9 +33,9 @@ const getAllActivities = async () => {
 
   return activities.map(activity => ({
     ...activity,
-    submissionCount: activity.submissions.length,
-    pendingCount: activity.submissions.filter(s => s.status === 'PENDING').length,
-    approvedCount: activity.submissions.filter(s => s.status === 'APPROVED').length
+    submissionCount: activity.submission.length,
+    pendingCount: activity.submission.filter(s => s.status === 'PENDING').length,
+    approvedCount: activity.submission.filter(s => s.status === 'APPROVED').length
   }));
 };
 
@@ -75,7 +75,7 @@ const getPublishedActivities = async (userId) => {
     },
     include: {
       category: true,
-      submissions: {
+      submission: {
         where: { userId },
         select: { id: true, status: true, pointsAwarded: true, createdAt: true }
       }

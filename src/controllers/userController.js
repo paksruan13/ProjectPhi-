@@ -1,5 +1,6 @@
 const userService = require('../services/userService');
 const { emitLeaderboardUpdate } = require('../services/leaderboardService');
+const { prisma } = require('../config/database');
 
 const createUser = async (req, res) => {
   const { name, email, teamId } = req.body;
@@ -29,7 +30,22 @@ const createUser = async (req, res) => {
 
 const getAllUsers = async (req, res) => {
   try {
-    const users = await userService.getAllUsers();
+    const users = await prisma.user.findMany({
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        team: {
+          select: { 
+            id: true, 
+            name: true, 
+            teamCode: true 
+          }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
     res.json(users);
   } catch (err) {
     console.error('Error fetching users:', err);
@@ -37,7 +53,27 @@ const getAllUsers = async (req, res) => {
   }
 };
 
+const getAllCoaches = async (req, res) => {
+  try {
+    const coaches = await prisma.user.findMany({
+      where: { role: 'COACH' },
+      select: {
+        id: true, name: true, email: true,
+        team: {
+          select: { id: true, name: true, teamCode: true }
+        }
+      },
+      orderBy: { createdAt: 'asc' }
+    });
+    res.json(coaches);
+  } catch (err) {
+    console.error('Error fetching coaches:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
 module.exports = {
   createUser,
-  getAllUsers
+  getAllUsers,
+  getAllCoaches
 };

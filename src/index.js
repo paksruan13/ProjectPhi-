@@ -28,7 +28,7 @@ app.use('/webhook', webhookRoutes);
 app.use(express.json());
 
 // Routes
-app.use('/', routes);
+app.use('/api', routes);
 
 server.listen(port, '0.0.0.0', () => {
   console.log(`Express & Socket.io server running on port ${port}`);

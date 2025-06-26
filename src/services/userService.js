@@ -9,9 +9,16 @@ const createUser = async (userData) => {
 };
 
 const getAllUsers = async () => {
-  return await prisma.user.findMany({
-    include: { team: { select: { id: true, name: true } } },
-  });
+  try{
+    return await prisma.user.findMany({
+      include:{
+        team: true,
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching users:', error);
+    throw new Error('Could not fetch users');
+  }
 };
 
 const getUserById = async (userId) => {

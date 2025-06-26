@@ -17,7 +17,7 @@ const UserManagement = () => {
 
   const fetchUsers = async () => {
     try {
-      const response = await fetch('http://localhost:4243/admin/users', {
+      const response = await fetch('http://localhost:4243/api/admin/users', {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -37,7 +37,7 @@ const UserManagement = () => {
 
   const fetchTeams = async () => {
     try {
-      const response = await fetch('http://localhost:4243/admin/teams', {
+      const response = await fetch('http://localhost:4243/api/admin/teams', {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -56,7 +56,7 @@ const UserManagement = () => {
 
   const updateUser = async (userId, userData) => {
     try {
-      const response = await fetch(`http://localhost:4243/admin/users/${userId}`, {
+      const response = await fetch(`http://localhost:4243/api/admin/users/${userId}`, {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${token}`,

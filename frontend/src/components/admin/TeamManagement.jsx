@@ -18,7 +18,7 @@ const TeamManagement = () => {
 
   const fetchTeams = async () => {
     try {
-      const response = await fetch('http://localhost:4243/admin/teams', {
+      const response = await fetch('http://localhost:4243/api/teams/admin', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       
@@ -36,7 +36,7 @@ const TeamManagement = () => {
 
   const fetchCoaches = async () => {
     try {
-      const response = await fetch('http://localhost:4243/admin/coaches', {
+      const response = await fetch('http://localhost:4243/api/users/coaches', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       
@@ -53,7 +53,7 @@ const TeamManagement = () => {
 
   const createTeam = async () => {
     try {
-      const response = await fetch('http://localhost:4243/admin/teams', {
+      const response = await fetch('http://localhost:4243/api/teams', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -82,7 +82,7 @@ const TeamManagement = () => {
 
   const updateTeam = async (teamId, teamData) => {
     try {
-      const response = await fetch(`http://localhost:4243/admin/teams/${teamId}`, {
+      const response = await fetch(`http://localhost:4243/api/teams/admin/${teamId}`, {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -104,6 +104,30 @@ const TeamManagement = () => {
       console.error('Error:', error);
     }
   };
+
+  const assignCoach = async (teamId, coachId) => {
+  try {
+    const response = await fetch(`http://localhost:4243/api/teams/${teamId}/coach`, {  
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ coachId })
+    });
+
+    if (response.ok) {
+      await fetchTeams();
+      setError('');
+    } else {
+      const errorData = await response.json();
+      setError(errorData.error || 'Failed to assign coach');
+    }
+  } catch (error) {
+    setError('Error assigning coach');
+    console.error('Error:', error);
+  }
+};
 
   const handleEditTeam = (team) => {
     setEditingTeam({
